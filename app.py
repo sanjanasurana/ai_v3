@@ -16,6 +16,29 @@ import json
 
 load_dotenv()
 
+def get_context_from_db(module_name, limit=5):
+    """
+    Fetches historical data from MongoDB and formats it for the AI 
+    so the AI can 'remember' previous analyses.
+    """
+    history = get_query_history(module_name, limit=limit)
+    if not history:
+        return "No historical data found in the database."
+    
+    context_str = "--- START OF HISTORICAL DATABASE ENTRIES ---\n"
+    for i, doc in enumerate(history):
+        ts = doc.get('timestamp', 'N/A')
+        prompt = doc.get('user_prompt', 'N/A')
+        response = doc.get('ai_response', 'N/A')
+        # We limit the response length to avoid hitting token limits
+        summary_res = response[:500] + "..." if len(response) > 500 else response
+        
+        context_str += f"Entry {i+1} [Time: {ts}]:\n"
+        context_str += f"User asked: {prompt}\n"
+        context_str += f"AI previously answered: {summary_res}\n\n"
+    context_str += "--- END OF HISTORICAL DATABASE ENTRIES ---"
+    return context_str
+
 # Page Configuration
 st.set_page_config(
     page_title="AI Intelligence Platform V3",
@@ -277,11 +300,16 @@ def format_server_data_for_llm(data_df, start_dt, end_dt):
     
     return "\n".join(lines)
 
-def analyze_with_ai(data_snapshot, context, prompt, provider, model, temperature, max_tokens, api_key):
+def analyze_with_ai(data_snapshot, context, prompt, provider, model, temperature, max_tokens, api_key,db_context=""):
     """Universal AI analysis function supporting multiple providers"""
     try:
-        system_msg = f"You are an expert server health monitoring AI. {context}"
-        user_msg = f"Data:\n{data_snapshot}\n\nRequest:\n{prompt}"
+        system_msg = f"""You are an expert server health monitoring AI. 
+        Current System Context: {context}
+        
+        {db_context}
+        
+        When answering, consider the historical entries provided above to identify trends or recurring issues."""
+        user_msg = f"Current Live Data Snapshot:\n{data_snapshot}\n\nNew Request:\n{prompt}"
         
         if provider == "OpenAI":
             client = OpenAI(api_key=api_key)
@@ -367,6 +395,7 @@ def main():
     # MODULE 1: SERVER HEALTH ANALYSIS
     # ========================================================================
     if selected_module == "Server Health Analysis (V1)":
+        use_history = st.checkbox("🔗 Include historical database records in this analysis?", value=False)
         st.markdown('<div class="section-header">📊 Server Health Analysis</div>', unsafe_allow_html=True)
         
         server_data = load_server_data()
@@ -422,6 +451,10 @@ def main():
                                        height=100)
             
             if st.button("🔍 Analyze", type="primary", use_container_width=True):
+                db_context_data = ""
+                if use_history:
+                    with st.spinner("Fetching historical data from MongoDB..."):
+                        db_context_data = get_context_from_db('server_health', limit=5)
                 # Get appropriate API key
                 if ai_provider == "OpenAI" and not openai_key:
                     st.error("Please provide OpenAI API key in the sidebar.")
@@ -455,7 +488,8 @@ def main():
                     
                     st.subheader("🤖 AI Analysis")
                     result = analyze_with_ai(data_snapshot, context, user_prompt, 
-                                           ai_provider, model, temperature, max_tokens, api_key)
+                               ai_provider, model, temperature, max_tokens, api_key,
+                               db_context=db_context_data)
                     st.markdown(result)
                     
                     # Save to MongoDB
@@ -523,6 +557,7 @@ def main():
     # MODULE 2: INVENTORY INTELLIGENCE
     # ========================================================================
     elif selected_module == "Inventory Intelligence (V2)":
+        use_history_inv = st.checkbox("📚 Let AI access previous database queries for context?", value=False)
         st.markdown('<div class="section-header">📦 Inventory Intelligence Hub</div>', unsafe_allow_html=True)
         
         inventory, tickets, merged = load_inventory_data()
